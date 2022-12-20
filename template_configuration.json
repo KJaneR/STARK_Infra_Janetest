@@ -1,7 +1,7 @@
 {
   "Parameters" : {
-    "UserCICDPipelineBucketNameParameter" : "",
-    "UserCodeGenBucketNameParameter" : "",
-    "UserWebsiteBucketNameParameter" : ""
+    "UserCICDPipelineBucketNameParameter" : "stark-dev-pipeline-serverlessninja-jantest",
+    "UserCodeGenBucketNameParameter" : "stark-dev-codegen-serverlessninja-jantest",
+    "UserWebsiteBucketNameParameter" : "stark-dev-web-serverlessninja-jantest"
   }
 }
