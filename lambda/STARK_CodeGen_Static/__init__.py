@@ -65,7 +65,7 @@ def create_handler(event, context):
     #Cloud resources document
     response = s3.get_object(
         Bucket=codegen_bucket_name,
-        Key=f'STARK_cloud_resources/{project_varname}.yaml'
+        Key=f'codegen_dynamic/{project_varname}/{project_varname}.yaml'
     )
 
     #FIXME: Remove raw for now since we need to update cloud_resources with API gateway URL - hopefully using sort_keys=False will remove the need for the raw version) 
@@ -80,7 +80,7 @@ def create_handler(event, context):
     files_to_commit = []
 
     #STARK main JS file
-    data = { 'API Endpoint': endpoint, 'Entities': models, "Bucket Name": bucket_name }
+    data = { 'API Endpoint': endpoint, 'Entities': models, "Bucket Name": bucket_name, 'Project Name': project_varname }
     add_to_commit(cg_js_stark.create(data), key=f"js/STARK.js", files_to_commit=files_to_commit, file_path='static')
 
     #For each entity, we'll create a set of HTML and JS Files and uploaded folder
@@ -98,17 +98,21 @@ def create_handler(event, context):
             
         cgstatic_data = { "Entity": entity, "PK": pk, "Columns": cols, "Project Name": project_name, "Relationships": relationships, "Rel Model": rel_model }
         entity_varname = converter.convert_to_system_name(entity)
-        print('static rel_model')
-        print(rel_model)
+        # print('static rel_model')
+        # print(rel_model)
         for rel in rel_model:
-            print('static rel_model')
-            print(rel_model)
+            # print('static rel_model')
+            # print(rel_model)
             pk   = rel_model[rel]["pk"]
             cols = rel_model[rel]["data"]
             many_entity_varname = converter.convert_to_system_name(rel)
             cgstatic_many_data = { "Entity": rel, "PK": pk, "Columns": cols, "Project Name": project_name, "Relationships": relationships }
             add_to_commit(source_code=cg_js_many.create(cgstatic_many_data), key=f"js/many_{many_entity_varname}.js", files_to_commit=files_to_commit, file_path='static')
 
+        if "sequence" in models[entity]:
+            cgstatic_data["Sequence"] = models[entity]["sequence"]
+        print('cgstatic_data')
+        print(cgstatic_data)
         add_to_commit(source_code=cg_add.create(cgstatic_data), key=f"{entity_varname}_add.html", files_to_commit=files_to_commit, file_path='static')
         add_to_commit(source_code=cg_edit.create(cgstatic_data), key=f"{entity_varname}_edit.html", files_to_commit=files_to_commit, file_path='static')
         add_to_commit(source_code=cg_delete.create(cgstatic_data), key=f"{entity_varname}_delete.html", files_to_commit=files_to_commit, file_path='static')
@@ -237,7 +241,7 @@ def create_handler(event, context):
 
     response = s3.get_object(
         Bucket=codegen_bucket_name,
-        Key=f'STARK_cloud_resources/{project_varname}_pipeline.pickle'
+        Key=f'codegen_dynamic/{project_varname}/{project_varname}_pipeline.pickle'
     )
     pipeline_definition = pickle.loads(response['Body'].read()) 
     print(pipeline_definition)

@@ -48,6 +48,7 @@ helper = CfnResource() #We're using the AWS-provided helper library to minimize 
 @helper.create
 @helper.update
 def create_handler(event, context):
+    print(event.get('ResourceProperties', {}))
     #Project name from our CF template
     project_name    = event.get('ResourceProperties', {}).get('Project','')
     repo_name       = event.get('ResourceProperties', {}).get('RepoName','')
@@ -67,7 +68,7 @@ def create_handler(event, context):
     codegen_bucket_name = os.environ['CODEGEN_BUCKET_NAME']
     response = s3.get_object(
         Bucket=codegen_bucket_name,
-        Key=f'STARK_cloud_resources/{project_varname}.yaml'
+        Key=f'codegen_dynamic/{project_varname}/{project_varname}.yaml'
     )
     cloud_resources = yaml.safe_load(response['Body'].read().decode('utf-8')) 
 
@@ -95,8 +96,14 @@ def create_handler(event, context):
                 for key in items:
                     for value in key:
                         key[value] = converter.convert_to_system_name(key[value]) 
+                        
+        seq = {}
+        if len(models[entity]["sequence"]) > 0:
+            seq = models[entity]["sequence"]
+
         data = {
                 "Entity": entity, 
+                "Sequence": seq, 
                 "Columns": models[entity]["data"], 
                 "PK": models[entity]["pk"], 
                 "DynamoDB Name": ddb_table_name,
@@ -107,6 +114,9 @@ def create_handler(event, context):
                 "Processed Bucket Name": s3_analytics_processed_bucket_name,
                 "Project Name": project_varname
             }
+        
+            
+        print(data)    
         source_code            = cg_ddb.create(data)
         test_source_code       = cg_test.create(data)
         fixtures_source_code   = cg_fixtures.create(data)
@@ -138,11 +148,13 @@ def create_handler(event, context):
 
     ###########################################################
     #Create necessary files for test_cases directories
+    
+
     data = {
         "Entities": entities,
         "Models": models,
         "DynamoDB Name": ddb_table_name,
-        "Bucket Name": website_bucket,
+        "Bucket Name": website_bucket
     }
     conftest_code = cg_conftest.create(data)
 
@@ -273,7 +285,7 @@ def create_handler(event, context):
     response = s3.put_object(
         Body=pickle.dumps(pipeline_definition),
         Bucket=codegen_bucket_name,
-        Key=f'STARK_cloud_resources/{project_varname}_pipeline.pickle',
+        Key=f'codegen_dynamic/{project_varname}/{project_varname}_pipeline.pickle',
         Metadata={
             'STARK_Description': 'Pickled pipeline definition for this project, with change detection in Source stage.'
         }

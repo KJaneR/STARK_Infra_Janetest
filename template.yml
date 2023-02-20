@@ -169,12 +169,13 @@ Resources:
                     STARK_ENVIRONMENT_TYPE: PROD
                     CODEGEN_BUCKET_NAME: !Ref UserCodeGenBucketNameParameter
             Policies:
-                - AmazonS3ReadOnlyAccess
+                - AmazonS3FullAccess
                 - AWSLambda_FullAccess
             Layers:
                 - !Ref PyYamlLayer
                 - !Ref STARKFriendlyToSystemNamesLayer
                 - !Ref STARKGetRelationshipLayer
+                - !Ref STARKScryptLayer
             Timeout: 60 
             Architectures:
                 - arm64
@@ -360,8 +361,8 @@ Resources:
                 - !Ref CFCustomResourceHelperLayer
                 - !Ref PyYamlLayer
                 - !Ref STARKFriendlyToSystemNamesLayer
-                - !Ref STARKScryptLayer
                 - !Ref STARKSuggestGraphicLayer
+                - !Ref STARKGetRelationshipLayer
             Architectures:
                 - arm64
             MemorySize: 1760

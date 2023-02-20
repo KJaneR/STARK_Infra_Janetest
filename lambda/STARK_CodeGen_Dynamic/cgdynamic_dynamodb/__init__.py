@@ -9,15 +9,18 @@ import textwrap
 import convert_friendly_to_system as converter
 
 def create(data):
-  
+    print('data')
+    print(data)
     pk             = data["PK"]
     entity         = data["Entity"]
+    sequence       = data["Sequence"]
     columns        = data["Columns"]
     ddb_table_name = data["DynamoDB Name"]
     bucket_name    = data['Bucket Name']
     relationships  = data["Relationships"]
     rel_model      = data["Rel Model"]
-    
+    print('sequence')
+    print(sequence)
     #Convert human-friendly names to variable-friendly names
     entity_varname = converter.convert_to_system_name(entity)
     pk_varname     = converter.convert_to_system_name(pk)
@@ -36,9 +39,12 @@ def create(data):
     col_dict += ' }'
 
     #Create the dict value retrieval code for the add/edit function body
+    
     dict_to_var_code = f"""pk = data.get('pk', '')
         sk = data.get('sk', '')    
         if sk == '': sk = default_sk"""
+
+    
 
     #Check for file upload in child if 1-M is available
     for rel in rel_model:
@@ -80,7 +86,7 @@ def create(data):
         else:
             col_varname = converter.convert_to_system_name(col)
             update_expression += f"""#{col_varname} = :{col_varname}, """
-    update_expression += " #STARKListViewsk = :STARKListViewsk"
+    update_expression += " #STARKListViewsk = :STARKListViewsk, #STARKUpdatedBy = :STARKUpdatedBy, #STARKUpdatedTs = :STARKUpdatedTS"
     if with_upload or with_upload_on_many:
         update_expression += ", #STARK_uploaded_s3_keys = :STARK_uploaded_s3_keys"
 
@@ -118,17 +124,28 @@ def create(data):
     sort_fields       = ["{pk_varname}", ]
     relationships     = {relationships}
     entity_upload_dir = stark_core.upload_dir + "{entity_varname}/"
+    entity_name       = "{entity}"
     metadata          = {{
                 "{pk_varname}": {{
                     'value': '',
-                    'key': 'pk',
-                    'required': True,
+                    'key': 'pk',"""
+
+    if len(sequence) > 0:
+        required = False
+    else:
+        required = True
+        
+    source_code += f"""
+                    'required': {required},"""
+                    
+    source_code += f"""                
                     'max_length': '',
                     'data_type': 'string',
                     'state': None,
                     'feedback': '',
                     'relationship': ''
                 }},"""
+    
         
     
     for col, col_type in columns.items():
@@ -209,6 +226,7 @@ def create(data):
     source_code += f"""
     }}
     resp_obj = None
+    username = ""
 
     ############
     #PERMISSIONS
@@ -225,7 +243,9 @@ def create(data):
 
         #Get request type
         request_type = event.get('queryStringParameters',{{}}).get('rt','')
-
+        
+        global username
+        username = event.get('requestContext',{{}}).get('authorizer',{{}}).get('lambda',{{}}).get('Username','')
         if request_type == '':
             ########################
             #Handle non-GET requests
@@ -344,7 +364,7 @@ def create(data):
 
             if method == "DELETE":
                 if(stark_core.sec.is_authorized(stark_permissions['delete'], event, ddb)):
-                    response = delete(data)
+                    response = delete_v2(data)
                 else:
                     responseStatusCode, response = stark_core.sec.authFailResponse
 
@@ -463,6 +483,10 @@ def create(data):
         #FIXME: THIS IS A STUB, WILL NEED TO BE UPDATED WITH
         #   ENHANCED LISTVIEW LOGIC LATER WHEN WE ACTUALLY IMPLEMENT REPORTING
         
+        string_filter = 'attribute_not_exists(#isDeleted) '
+        ExpressionAttributeNamesDict = {{
+            '#isDeleted' : 'STARK-Is-Deleted',
+        }}
         temp_string_filter = ""
         object_expression_value = {{':sk' : {{'S' : sk}}}}
         report_param_dict = {{}}
@@ -475,7 +499,9 @@ def create(data):
                     temp_string_filter += processed_operator_and_parameter_dict['filter_string']
                     object_expression_value.update(processed_operator_and_parameter_dict['expression_values'])
                     report_param_dict.update(processed_operator_and_parameter_dict['report_params'])
-        string_filter = temp_string_filter[1:-3]
+                    
+        if temp_string_filter != "":
+            string_filter = string_filter + "AND "+temp_string_filter[1:-3]
 
 
         #FIXME: 1-M SEARCH CRITERIA: filter result of 1-M report operators here
@@ -504,10 +530,9 @@ def create(data):
         ddb_arguments['Select'] = "ALL_ATTRIBUTES"
         ddb_arguments['ReturnConsumedCapacity'] = 'TOTAL'
         ddb_arguments['KeyConditionExpression'] = 'sk = :sk'
+        ddb_arguments['FilterExpression'] = string_filter
         ddb_arguments['ExpressionAttributeValues'] = object_expression_value
-
-        if temp_string_filter != "":
-            ddb_arguments['FilterExpression'] = string_filter
+        ddb_arguments['ExpressionAttributeNames'] = ExpressionAttributeNamesDict
             
         while next_token != None:
             next_token = '' if next_token == 'initial' else next_token
@@ -730,6 +755,9 @@ def create(data):
             db_handler = ddb
 
         
+        ExpressionAttributeNamesDict = {{
+            '#isDeleted' : 'STARK-Is-Deleted',
+        }}
         items = []
         ddb_arguments = {{}}
         ddb_arguments['TableName'] = ddb_table
@@ -738,7 +766,9 @@ def create(data):
         ddb_arguments['Limit'] = page_limit
         ddb_arguments['ReturnConsumedCapacity'] = 'TOTAL'
         ddb_arguments['KeyConditionExpression'] = 'sk = :sk'
+        ddb_arguments['FilterExpression'] = 'attribute_not_exists(#isDeleted)'
         ddb_arguments['ExpressionAttributeValues'] = {{ ':sk' : {{'S' : sk }} }}
+        ddb_arguments['ExpressionAttributeNames'] = ExpressionAttributeNamesDict
 
         if lv_token != None:
             ddb_arguments['ExclusiveStartKey'] = lv_token
@@ -802,6 +832,40 @@ def create(data):
         return response"""
 
     source_code+= f"""
+    def delete_v2(data, db_handler = None):
+        if db_handler == None:
+            db_handler = ddb
+
+        UpdateExpressionString = "SET #STARKDeletedBy = :STARKDeletedBy, #STARKDeletedTs = :STARKDeletedTS, #STARKIsDeleted = :STARKIsDeleted, #ttl = :ttl" 
+        ExpressionAttributeNamesDict = {{
+            '#STARKDeletedBy': 'STARK-Deleted-By',
+            '#STARKDeletedTs': 'STARK-Deleted-TS',
+            '#STARKIsDeleted': 'STARK-Is-Deleted',
+            '#ttl': 'TTL'
+        }}
+        ExpressionAttributeValuesDict = utilities.append_record_metadata('delete', username)
+
+        pk = data.get('pk','')
+        sk = data.get('sk','')
+        if sk == '': sk = default_sk
+
+        ddb_arguments = {{}}
+        ddb_arguments['TableName'] = ddb_table
+        ddb_arguments['Key'] = {{
+                'pk' : {{'S' : pk}},
+                'sk' : {{'S' : sk}}
+            }}
+
+        ddb_arguments['ReturnValues'] = 'UPDATED_NEW'
+        ddb_arguments['UpdateExpression'] = UpdateExpressionString
+        ddb_arguments['ExpressionAttributeNames'] = ExpressionAttributeNamesDict
+        ddb_arguments['ExpressionAttributeValues'] = ExpressionAttributeValuesDict
+
+        response = db_handler.update_item(**ddb_arguments)
+        global resp_obj
+        resp_obj = response
+        return "OK"
+
     def delete(data, db_handler = None):
         if db_handler == None:
             db_handler = ddb
@@ -899,9 +963,11 @@ def create(data):
         source_code += f"""
             '#STARK_uploaded_s3_keys': 'STARK_uploaded_s3_keys',"""
     source_code += f"""
-            '#STARKListViewsk' : 'STARK-ListView-sk'
+            '#STARKListViewsk' : 'STARK-ListView-sk',
+            '#STARKUpdatedBy': 'STARK-Updated-By',
+            '#STARKUpdatedTs': 'STARK-Updated-TS'
         }}
-        ExpressionAttributeValuesDict = {{"""
+        tempExpressionAttributeValuesDict = {{"""
 
 
     for col, col_type in columns.items():
@@ -919,7 +985,7 @@ def create(data):
     source_code += f"""
             ':STARKListViewsk' : {{'S' : data['STARK-ListView-sk']}}
         }}
-
+        ExpressionAttributeValuesDict = tempExpressionAttributeValuesDict | utilities.append_record_metadata('edit', username)
         ddb_arguments = {{}}
         ddb_arguments['TableName'] = ddb_table
         ddb_arguments['Key'] = {{
@@ -985,9 +1051,47 @@ def create(data):
             
     source_code+= f"""
     def add(data, method='POST', db_handler=None):
+    """
+
+    if len(sequence) > 0:
+        dict_to_var_code_add = f"""pk = data_abstraction.get_sequence(entity_name)
+        sk = data.get('sk', '')    
+        if sk == '': sk = default_sk"""
+    else:
+        dict_to_var_code_add = f"""pk = data.get('pk', '')
+        sk = data.get('sk', '')    
+        if sk == '': sk = default_sk"""
+    
+    #Check for file upload in child if 1-M is available
+    for rel in rel_model:
+        rel_cols = rel_model[rel]["data"]
+        for rel_col, rel_col_type in rel_cols.items():
+            if isinstance(rel_col_type, dict):
+                if rel_col_type["type"] == 'file-upload': 
+                    with_upload_on_many = True
+
+    for col, col_type in columns.items():
+        col_varname = converter.convert_to_system_name(col)
+        
+        #check for file upload
+        if isinstance(col_type, dict) and col_type['type'] == 'file-upload':
+            with_upload = True
+        
+        col_type_id = set_type(col_type)
+
+        if col_type_id in ['S', 'N']: 
+            dict_to_var_code_add += f"""
+        {col_varname} = str(data.get('{col_varname}', ''))"""
+
+        else:
+            dict_to_var_code_add += f"""
+        {col_varname} = data.get('{col_varname}', '')"""
+
+    source_code+= f"""    
         if db_handler == None:
             db_handler = ddb
-        {dict_to_var_code}"""
+        {dict_to_var_code_add}"""
+
 
     if with_upload or with_upload_on_many:
         source_code += f"""
@@ -1009,7 +1113,7 @@ def create(data):
             STARK_uploaded_s3_keys[key] = upload_data
         """
     source_code += f"""
-        item={{}}
+        item = utilities.append_record_metadata('add', username)
         item['pk'] = {{'S' : pk}}
         item['sk'] = {{'S' : sk}}"""
 
@@ -1026,8 +1130,16 @@ def create(data):
 
     source_code += f"""
 
-        if data.get('STARK-ListView-sk','') == '':
-            item['STARK-ListView-sk'] = {{'S' : create_listview_index_value(data)}}
+        if data.get('STARK-ListView-sk','') == '':"""
+
+    if len(sequence) > 0:
+        source_code += f"""    
+            data['pk'] = pk"""
+    
+    source_code += f"""    
+            item['STARK-ListView-sk'] = {{'S' : create_listview_index_value(data)}}"""
+        
+    source_code += f"""
         else:
             item['STARK-ListView-sk'] = {{'S' : data['STARK-ListView-sk']}}
 
@@ -1127,11 +1239,12 @@ def create(data):
 
     def get_all_by_old_parent_value(old_pk_val, attribute, sk = default_sk):
     
-        string_filter = " #Attribute = :old_parent_value"
+        string_filter = " attribute_not_exists(#isDeleted) AND #Attribute = :old_parent_value"
         object_expression_value = {{':sk' : {{'S' : sk}},
                                     ':old_parent_value': {{'S' : old_pk_val}}}}
         ExpressionAttributeNamesDict = {{
             '#Attribute' : attribute,
+            '#isDeleted' : 'STARK-Is-Deleted'
         }}
 
         ddb_arguments = {{}}

@@ -16,8 +16,8 @@ import yaml
 
 #Private modules
 import convert_friendly_to_system as converter
-import stark_scrypt as scrypt
 import suggest_graphic as set_graphic
+import get_relationship as get_rel
 
 ddb = boto3.client('dynamodb')
 s3  = boto3.client('s3')
@@ -39,7 +39,7 @@ def create_handler(event, context):
     codegen_bucket_name = os.environ['CODEGEN_BUCKET_NAME']
     response = s3.get_object(
         Bucket=codegen_bucket_name,
-        Key=f'STARK_cloud_resources/{project_varname}.yaml'
+        Key=f'codegen_dynamic/{project_varname}/{project_varname}.yaml'
     )
     cloud_resources = yaml.safe_load(response['Body'].read().decode('utf-8')) 
 
@@ -72,6 +72,28 @@ def create_handler(event, context):
 
     all_permissions = system_permissions + ', ' + business_permissions
     
+    #################################
+    #Create sequence table
+    for entity in entities:
+        if "sequence" in models[entity]:
+            pk              = entity
+            current_counter = models[entity]['sequence']['current_counter']
+            prefix          = models[entity]['sequence']['prefix']
+            left_pad        = models[entity]['sequence']['left_pad']
+
+            business_module                      = {}
+            business_module['pk']                = {'S' : pk}
+            business_module['sk']                = {'S' : "STARK|sequence"}
+            business_module['Current_Counter']   = {'N' : str(current_counter)}
+            business_module['Prefix']            = {'S' : prefix}
+            business_module['Left_Pad']          = {'S' : str(left_pad)}
+            business_module['STARK-ListView-sk'] = {'S' : pk}
+
+            response = ddb.put_item(
+                TableName=ddb_table_name,
+                Item=business_module,
+            )
+            print(response)
 
     #################################
     #Create default user and password
@@ -79,8 +101,9 @@ def create_handler(event, context):
     
     #FIXME: Default password is static right now, but in prod, this should be random each time and then saved to dev's local machine 
     #           (i.e., where he triggered the Stark CLI for the system generation request)
-    password = "welcome-2-STARK!"
-    hashed   = scrypt.create_hash(password)
+    # password = "welcome-2-STARK!"
+    # hashed   = scrypt.create_hash(password)
+    hashed = cloud_resources["Default Password"]
 
     item                  = {}
     item['pk']            = {'S' : user}
@@ -163,6 +186,11 @@ def create_handler(event, context):
                 target = entity_varname + '_' + module_type + '.html'
                 title = module_type + ' ' + entity
                 is_menu_item = False
+            
+            relationships = get_rel.get_relationship(models, entity, entity)
+            for relationship in relationships.get('belongs_to', []):
+                if relationship.get('rel_type') == 'has_many':
+                    is_menu_item = False
                 
             icon = 'images/' + set_graphic.suggest_graphic(entity)
 

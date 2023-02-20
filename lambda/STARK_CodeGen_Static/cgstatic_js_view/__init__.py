@@ -16,11 +16,14 @@ cg_coltype = importlib.import_module(f"{prepend_dir}cgstatic_controls_coltype")
 import convert_friendly_to_system as converter
 
 def create(data):
+    print('data')
+    print(data)
     entity         = data["Entity"]
     cols           = data["Columns"]
     pk             = data['PK']
     relationships  = data["Relationships"]
     rel_model      = data["Rel Model"]
+    sequence       = data["Sequence"]
 
     entity_varname = converter.convert_to_system_name(entity)
     entity_app     = entity_varname + '_app'
@@ -46,8 +49,15 @@ def create(data):
             data: {{
                 metadata: {{
                     '{pk_varname}': {{
-                        'value': '',
-                        'required': true,
+                        'value': '',"""
+    if len(sequence) > 0:
+        required = "false"
+    else:
+        required = "true"
+        
+    source_code += f"""
+                        'required': {required},"""
+    source_code += f"""                
                         'max_length': '',
                         'data_type': 'String'
                     }},"""
@@ -365,13 +375,12 @@ def create(data):
             if col_type["type"] == 'file-upload': 
                 with_upload = True 
                 ext_string += f"""
-                         "{col_varname}": "{str(col_type.get("allowed_ext",""))}","""
-                allowed_size = col_type.get("max_upload_size", "1 MB")
-                temp_split = allowed_size.split()
+                         "{col_varname}": {col_type.get("allowed_ext",[])},"""
+                allowed_size = col_type.get("max_upload_size", 1)
                 allowed_size_string += f"""
-                         "{col_varname}": {int(temp_split[0])},"""
+                         "{col_varname}": {float(allowed_size)},"""
                 upload_elems_string += f"""
-                        "{col_varname}": {{"file": '', "progress_bar_val": 0}},"""
+                        "{col_varname}": {{"file": '', "progress_bar_val": 0, "tmp_location": ""}},"""
     if with_upload or with_upload_on_many:
         source_code += f"""
                 s3_access: "","""
@@ -638,6 +647,7 @@ def create(data):
                             root.{entity_varname}.orig_STARK_uploaded_s3_keys = structuredClone(Object.fromEntries(Object.entries(data["item"]['STARK_uploaded_s3_keys'])))
                             root.STARK_upload_elements['{col_varname}'].file = root.{entity_varname}.{col_varname} != "" ? root.{entity_varname}.{col_varname} : ""
                             root.STARK_upload_elements['{col_varname}'].progress_bar_val = root.{entity_varname}.{col_varname} != "" ? 100 : 0
+                            root.STARK_upload_elements['{col_varname}'].tmp_location = `https://${{root.object_url_prefix}}${{root.{entity_varname}.STARK_uploaded_s3_keys.{col_varname}}}`
                             
                             """
 
@@ -651,7 +661,7 @@ def create(data):
             
             foreign_entity  = converter.convert_to_system_name(has_one if has_one != '' else has_many)
             foreign_field   = converter.convert_to_system_name(col_type.get('value', foreign_entity))
-            foreign_display = converter.convert_to_system_name(col_type.get('display', foreign_field))
+            # foreign_display = converter.convert_to_system_name(col_type.get('display', foreign_field))
 
             if  has_one != '':
                 #simple 1-1 relationship
@@ -988,6 +998,19 @@ def create(data):
                 }},"""
     if with_upload:
         source_code += f"""
+                show_preview(filename) {{
+                    if(typeof filename == 'string') {{
+                        ext = filename.split('.').pop()
+                        console.log(ext)
+                        arr_previewable = ['jpg', 'jpeg', 'png', 'bmp', 'svg', 'gif']
+                        if(arr_previewable.findIndex(elem => elem == ext) >= 0) {{
+                            return true
+                        }}
+                        else {{
+                            return false
+                        }}
+                    }}
+                }},
                 process_upload_file(file_upload_element) {{
                     var upload_processed = {{
                             'message': 'initial'
@@ -1002,7 +1025,7 @@ def create(data):
                         uuid = STARK.create_UUID()
                         ext = file.name.split('.').pop()
 
-                        valid_file = STARK.get_file_ext_whitelist(root.ext_whitelist[file_upload_element], root.ext_whitelist_table).split(", ").includes(ext)
+                        valid_file = STARK.get_file_ext_whitelist(root.ext_whitelist[file_upload_element], root.ext_whitelist_table).includes(ext)
                         allowed_file_size = STARK.get_allowed_upload_size(root.allowed_size[file_upload_element], root.allowed_size_table)
                         if(!valid_file) {{
                             //check if file type is valid
@@ -1044,20 +1067,21 @@ def create(data):
                             ACL: 'public-read'
                             }}, function(err, data) {{
                                 console.log(data)
+                                root.STARK_upload_elements[file_upload_element]['tmp_location'] = data.Location
                                 if(err) {{
                                     console.log(err)
                                 }}
                             }}).on('httpUploadProgress', function (progress) {{
                             root.STARK_upload_elements[file_upload_element].progress_bar_val = parseInt((progress.loaded * 100) / progress.total);
-                            root.metadata[file_upload_element].state = true
-                            root.metadata[file_upload_element].feedback = "" 
+                            root.validation_properties[file_upload_element].state = true
+                            root.validation_properties[file_upload_element].feedback = "" 
                         }});
                     }}
                     else {{
                         //do not show alert when file upload is opened then closed
                         if(upload_processed['message'] != 'initial') {{
-                            root.metadata[file_upload_element].state = false
-                            root.metadata[file_upload_element].feedback = upload_processed['message'] 
+                            root.validation_properties[file_upload_element].state = false
+                            root.validation_properties[file_upload_element].feedback = upload_processed['message'] 
                         }}
                     }}
 
@@ -1091,8 +1115,22 @@ def create(data):
             has_many_ux = col_type.get('has_many_ux', '')
             if  has_one != '' or (has_many != '' and has_many_ux != 'repeater'):
                 foreign_entity  = converter.convert_to_system_name(has_one if has_one != '' else has_many)
-                foreign_field   = converter.convert_to_system_name(col_type.get('value', foreign_entity))
-                foreign_display = converter.convert_to_system_name(col_type.get('display', foreign_field))
+                foreign_field_display = col_type.get('display', foreign_entity)
+                foreign_field_value   = converter.convert_to_system_name(col_type.get('value', foreign_entity))
+                
+                new_arr_field = []
+                for display_value in foreign_field_display:
+                    new_arr_field.append(str(converter.convert_to_system_name(display_value)))
+                print(new_arr_field)   
+
+                arr_fields = new_arr_field + [foreign_field_value] if foreign_field_value not in new_arr_field else new_arr_field
+
+                separator = " + ' - ' + " 
+                array_of_strings = ["arrayItem['" + item + "']" + separator for item in new_arr_field]
+                foreign_display = ''
+                for array_item in array_of_strings:
+                    foreign_display += array_item
+                foreign_display = foreign_display[:-len(separator)]
 
                 source_code += f"""
                 list_{foreign_entity}: function () {{
@@ -1101,12 +1139,14 @@ def create(data):
                         root.lists.{foreign_entity} = []
 
                         //FIXME: for now, generic list() is used. Can be optimized to use a list function that only retrieves specific columns
-                        fields = ['{foreign_field}', '{foreign_display}']
+                        fields = {arr_fields}
+                        
                         {foreign_entity}_app.get_fields(fields).then( function(data) {{
-                            data.forEach(function(arrayItem) {{
-                                value = arrayItem['{foreign_field}']
-                                text  = arrayItem['{foreign_display}']"""
-                 
+                            data.forEach(function(arrayItem) {{"""  
+                source_code += f"""
+                                text = {foreign_display}
+                                value = arrayItem['{foreign_field_value}']"""
+                
                 source_code += f"""            
                                 root.lists.{foreign_entity}.push({{ value: value, text: text }})"""
 
